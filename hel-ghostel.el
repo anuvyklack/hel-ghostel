@@ -1,0 +1,546 @@
+;;; hel-ghostel.el --- Hel integration for Ghostel -*- lexical-binding: t -*-
+
+;; Copyright (c) 2026 Yuriy Artemyev
+
+;; Author: Yuriy Artemyev <anuvyklack@gmail.com>
+;; URL: https://github.com/anuvyklack/hel-ghostel
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "29.1") (hel "0.10.0") (ghostel "0.8.0"))
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;; This file is NOT part of GNU Emacs.
+
+;;; Code:
+
+(require 'dash)
+(require 'hel)
+(require 'ghostel)
+
+(declare-function ghostel--mode-enabled "ghostel-module")
+
+(defvar hel-ghostel-mode)
+
+;;; Customization
+
+(defgroup hel-ghostel nil
+  "Hel integration for ghostel."
+  :group 'ghostel
+  :prefix "hel-ghostel-")
+
+(defcustom hel-ghostel-initial-state 'insert
+  "Initial Hel state for new `ghostel-mode' buffers.
+Must be set via `setopt'!"
+  :type '(choice (const :tag "Insert" insert)
+                 (const :tag "Normal" normal)
+                 (symbol :tag "Other state"))
+  :group 'hel-ghostel
+  :set (lambda (symbol value)
+         (set-default-toplevel-value symbol value)
+         (hel-set-initial-state 'ghostel-mode value)))
+
+(defcustom hel-ghostel-send-escape 'auto
+  "Where ESC in Hel Insert state should be send to the terminal.
+
+`auto'      When the inner app is in alt-screen mode (DECSET 1049,
+          used by vim, less, htop, nvim, etc.) ESC is sent to the
+          terminal, otherwise Hel will switch to Normal state.
+
+`terminal'  Always send ESC to the terminal.
+
+`hel'       Switch Hel to Normal state on ESC.
+
+Sets the initial value of the buffer-local state.
+Use \\[hel-ghostel-toggle-send-escape] to change it for the current buffer."
+  :type '(choice (const :tag "Auto (alt-screen heuristic)" auto)
+                 (const :tag "Always to terminal" terminal)
+                 (const :tag "Always to Hel" hel))
+  :group 'hel-ghostel)
+
+;;; Guard predicates
+
+(defun hel-ghostel--active-p ()
+  "Return non-nil when `hel-ghostel' editing should intercept."
+  (and hel-ghostel-mode
+       ghostel--term       ; terminal alive
+       ghostel--cursor-pos ; cursor position defined
+       (not (ghostel--mode-enabled ghostel--term 1049))
+       (eq ghostel--input-mode 'semi-char)))
+
+(defun hel-ghostel--line-mode-active-p ()
+  "Return non-nil when ghostel in line mode.
+In line mode, shell input is buffered as plain text in the
+[`ghostel--line-input-start', `ghostel--line-input-end'] region.
+Hel's default buffer-editing operators work correctly there."
+  (and hel-ghostel-mode
+       (eq ghostel--input-mode 'line)
+       (markerp ghostel--line-input-start)
+       (markerp ghostel--line-input-end)))
+
+;;; Cursor synchronization
+
+(defvar-local hel-ghostel--cursor-line nil
+  "Buffer line where the previous redraw placed the terminal cursor.
+Used by `hel-ghostel--redraw-a' to detect prompt-line scrolling.")
+
+(defvar-local hel-ghostel--alt-screen nil
+  "Non-nil when the terminal was in 1049 alt-screen on the previous redraw.
+Used by `hel-ghostel--redraw-a' to detect entry into alt-screen mode.")
+
+(defvar-local hel-ghostel--cursor-predicted-pos nil
+  "Predicted cursor position (COL . LINE), or nil.
+COL is an Emacs `current-column' value.
+LINE is 1-indexed as returned by `line-number-at-pos'.
+
+When a command sends multiple key sequences to the terminal, the
+terminals' cursor position in `ghostel--cursor-pos' becomes outdated:
+the terminal has not finished processing the keys. This variable stores
+the predicted position after the last send, so follow-up sends within
+the same command use an accurate baseline instead of the outdated value.
+
+Reset to nil by `hel-ghostel--redraw-a' after each render, when the terminal
+cursor position becomes accurate again.")
+
+(defun hel-ghostel--move-cursor-to-point ()
+  "Move the terminal cursor to Emacs point position by sending arrow keys.
+Uses the predicted cursor position when available. Updates the
+prediction after sending keys so a follow-up call within the same
+command sees the correct baseline."
+  (when (and ghostel--term (or ghostel--cursor-char-pos
+                               hel-ghostel--cursor-predicted-pos))
+    (-let* (((tcol . tline) (or hel-ghostel--cursor-predicted-pos
+                                (cons (save-excursion
+                                        (goto-char ghostel--cursor-char-pos)
+                                        (current-column))
+                                      (line-number-at-pos ghostel--cursor-char-pos t))))
+            (ecol  (current-column))
+            (eline (line-number-at-pos (point) t))
+            (dy    (- eline tline))
+            (dx    (- ecol tcol)))
+      (cond ((< 0 dy) (dotimes (_ dy)       (ghostel--send-encoded "down" "")))
+            ((< dy 0) (dotimes (_ (abs dy)) (ghostel--send-encoded "up" ""))))
+      (cond ((< 0 dx) (dotimes (_ dx)       (ghostel--send-encoded "right" "")))
+            ((< dx 0) (dotimes (_ (abs dx)) (ghostel--send-encoded "left" ""))))
+      (setq hel-ghostel--cursor-predicted-pos (cons ecol eline)))))
+
+(defvar-local hel-ghostel--sync-point-on-next-redraw nil
+  "When non-nil, the next `ghostel--redraw' will move point to the position of
+the terminal cursor.
+
+Commands that send PTY commands which moves the terminal cursor should set
+it or otherwise point would be left at a stale position.")
+
+(defun hel-ghostel--redraw-a (orig-fun term &optional full)
+  "Preserve point position across the native redraw call.
+`ghostel--redraw' is a native function that unconditionally places
+point at the terminal cursor on exit (\"point is owned by the
+renderer\", Renderer.zig).  In normal state the user navigates point
+independently of the terminal cursor (scrollback, etc.), so without
+this advice every incoming PTY byte would snap point back to the
+cursor, breaking normal-state navigation entirely.
+
+In non-insert states point is restored after the redraw unless the
+user was parked on the prompt line and the cursor scrolled to a new
+line — in that case the renderer's placement wins so the user follows
+the new prompt position.
+
+The standard Emacs mark is preserved by the native module;
+`hel--extend-selection' is a boolean flag unaffected by buffer
+positions — neither needs saving here.
+
+ORIG-FUN is the advised `ghostel--redraw' called with TERM and FULL.
+Skipped when the terminal is in alt-screen mode (1049); apps there
+own the screen and drive their own redraw cycle."
+  (let ((alt-screen-p (and term (ghostel--mode-enabled term 1049))))
+    (when hel-ghostel-mode
+      (when (and alt-screen-p (not hel-ghostel--alt-screen))
+        (hel-insert-state 1))
+      (setq hel-ghostel--alt-screen alt-screen-p))
+    (if (and hel-ghostel-mode (not alt-screen-p))
+        (let* ((saved-point (unless (or hel-ghostel--sync-point-on-next-redraw
+                                        hel-insert-state)
+                              (point)))
+               (pre-point-line (-some-> saved-point (line-number-at-pos t)))
+               (point-on-cursor-line? (and pre-point-line
+                                           hel-ghostel--cursor-line
+                                           (= pre-point-line
+                                              hel-ghostel--cursor-line))))
+          (funcall orig-fun term full)
+          (setq hel-ghostel--sync-point-on-next-redraw nil)
+          (let* ((post-cursor-line (-some-> ghostel--cursor-char-pos
+                                     (line-number-at-pos t)))
+                 (prompt-moved (and point-on-cursor-line?
+                                    post-cursor-line
+                                    (/= post-cursor-line
+                                        pre-point-line))))
+            (when (and saved-point (not prompt-moved))
+              (goto-char (min saved-point (point-max))))
+            (setq hel-ghostel--cursor-line post-cursor-line))
+          (setq hel-ghostel--cursor-predicted-pos nil))
+      (funcall orig-fun term full))))
+
+;;; Cursor style: let Hel control cursor shape
+
+(defun hel-ghostel--override-cursor-style (orig-fun style visible)
+  "Let Hel control cursor shape instead of the terminal.
+ORIG-FUN is the advised setter called with STYLE and VISIBLE.
+In alt-screen mode, defer to the terminal's cursor style."
+  (if (and ghostel--term
+           (not (ghostel--mode-enabled ghostel--term 1049)))
+      (hel-update-cursor)
+    (funcall orig-fun style visible)))
+
+;;; Editing primitives
+
+(defun hel-ghostel--meaningful-length (text)
+  "Length of TEXT, stripping per-line trailing whitespace in multi-line ranges.
+Heuristic for TUIs that draw a fixed-width input box (e.g. prompt_toolkit)
+that fill each input row to the terminal width — those trailing spaces appear
+in the buffer but are not part of the TUI's input model.
+
+Only applied when TEXT spans more than one buffer line; single-line trailing
+whitespace is treated as real content."
+  (if (string-search "\n" text)
+      (length (replace-regexp-in-string "[ \t]+\\(\n\\|\\'\\)" "\\1" text))
+    (length text)))
+
+(defun hel-ghostel--delete-region (beg end)
+  "Delete text between BEG and END via the terminal PTY.
+Moves terminal cursor to END, then sends one backspace per
+meaningful character (see `hel-ghostel--meaningful-length')."
+  (let ((count (-> (buffer-substring-no-properties beg end)
+                   (hel-ghostel--meaningful-length))))
+    (when (< 0 count)
+      (goto-char end)
+      (hel-ghostel--move-cursor-to-point)
+      (dotimes (_ count)
+        (ghostel--send-encoded "backspace" ""))
+      (goto-char beg)
+      (setq hel-ghostel--cursor-predicted-pos nil))))
+
+(defun hel-ghostel--point-on-cursor-row-p ()
+  "Non-nil when point is on the same buffer line as the terminal cursor."
+  (and hel-ghostel--cursor-line
+       (= (line-number-at-pos (point) t)
+          hel-ghostel--cursor-line)))
+
+(defun hel-ghostel--clear-input-line ()
+  "Clear the active input line via Ctrl-e Ctrl-u.
+Readline/zle/prompt_toolkit all bind this to end-of-line then
+kill-from-start, clearing the input without needing prompt geometry.
+Sets `hel-ghostel--sync-point-on-next-redraw' so the redraw triggered
+by the shell's echo lands point at the new cursor position."
+  (ghostel--send-encoded "e" "ctrl")
+  (ghostel--send-encoded "u" "ctrl")
+  (setq hel-ghostel--cursor-predicted-pos nil
+        hel-ghostel--sync-point-on-next-redraw t))
+
+;;; Normal-state commands
+
+(defun hel-ghostel--ensure-on-prompt ()
+  "Snap point to the terminal cursor when in scrollback.
+When point is not on the cursor row, disables multiple cursors, deactivates
+mark, moves point to `ghostel--cursor-char-pos', and clears the predicted
+cursor position.  Called at the start of every insert-state entry command
+in semi-char mode so subsequent positioning operates on the prompt row."
+  (unless (hel-ghostel--point-on-cursor-row-p)
+    (hel-disable-multiple-cursors-mode)
+    (deactivate-mark)
+    (goto-char ghostel--cursor-char-pos)
+    (setq hel-ghostel--cursor-predicted-pos nil)))
+
+;; i
+(hel-define-command hel-ghostel-insert ()
+  "Switch to Insert state, syncing terminal cursor with point first.
+In semi-char mode: syncs cursor then enters Insert.
+Outside semi-char: falls through to `hel-insert'."
+  :multiple-cursors nil
+  (interactive "*")
+  (if (hel-ghostel--active-p)
+      (progn
+        (hel-ghostel--ensure-on-prompt)
+        (when (use-region-p)
+          (hel-with-each-cursor
+            (hel-ensure-region-direction -1)))
+        (hel-ghostel--move-cursor-to-point)
+        (hel-insert-state 1))
+    (call-interactively #'hel-insert)))
+
+;; a
+(hel-define-command hel-ghostel-append ()
+  "Switch to Insert state after region, syncing terminal cursor first.
+In semi-char mode: syncs cursor then enters Insert.
+Outside semi-char: falls through to `hel-append'."
+  :multiple-cursors nil
+  (interactive "*")
+  (if (hel-ghostel--active-p)
+      (progn
+        (hel-ghostel--ensure-on-prompt)
+        (when (use-region-p)
+          (hel-with-each-cursor
+            (hel-ensure-region-direction 1)
+            (when (hel-linewise-selection-p)
+              (backward-char))))
+        (hel-ghostel--move-cursor-to-point)
+        (hel-insert-state 1))
+    (call-interactively #'hel-append)))
+
+;; I
+(hel-define-command hel-ghostel-insert-line ()
+  "Switch to insert state at the beginning of the current line.
+In semi-char mode, syncs the terminal cursor to point's row first,
+then sends Ctrl-a so readline/zle moves to the start of that input
+line.  In line mode, jumps to `ghostel--line-input-start' directly.
+Outside ghostel, falls through to `hel-insert-line'."
+  :multiple-cursors nil
+  (interactive "*")
+  (cond ((hel-ghostel--active-p)
+         (hel-ghostel--ensure-on-prompt)
+         (hel-ghostel--move-cursor-to-point)
+         (ghostel--send-encoded "a" "ctrl")
+         (setq hel-ghostel--cursor-predicted-pos nil)
+         (hel-insert-state 1))
+        ((hel-ghostel--line-mode-active-p)
+         (goto-char (marker-position ghostel--line-input-start))
+         (hel-insert-state 1))
+        (t
+         (call-interactively #'hel-insert-line))))
+
+;; A
+(hel-define-command hel-ghostel-append-line ()
+  "Switch to insert state at the end of the current line.
+Symmetric to `hel-ghostel-insert-line': sends Ctrl-e in semi-char,
+jumps to `ghostel--line-input-end' in line mode."
+  :multiple-cursors nil
+  (interactive "*")
+  (cond ((hel-ghostel--active-p)
+         (hel-ghostel--ensure-on-prompt)
+         (hel-ghostel--move-cursor-to-point)
+         (ghostel--send-encoded "e" "ctrl")
+         (setq hel-ghostel--cursor-predicted-pos nil)
+         (hel-insert-state 1))
+        ((hel-ghostel--line-mode-active-p)
+         (goto-char (marker-position ghostel--line-input-end))
+         (hel-insert-state 1))
+        (t
+         (call-interactively #'hel-append-line))))
+
+;; gs
+(hel-define-command hel-ghostel-beginning-of-line ()
+  "Route `g s' to `ghostel-beginning-of-input-or-line' on prompt rows.
+In a shell or REPL, column 0 lands point on the prompt — almost never
+what the user wants.  Falls through to `hel-beginning-of-line-command'
+in scrollback and non-prompt rows."
+  :multiple-cursors t
+  (interactive)
+  (if (or (hel-ghostel--active-p)
+          (hel-ghostel--line-mode-active-p))
+      (ghostel-beginning-of-input-or-line)
+    (call-interactively #'hel-beginning-of-line-command)))
+
+;; gh
+(hel-define-command hel-ghostel-first-non-blank ()
+  "Route `g h' to `ghostel-beginning-of-input-or-line' on prompt rows.
+Falls through to `hel-first-non-blank' elsewhere."
+  :multiple-cursors t
+  (interactive)
+  (if (or (hel-ghostel--active-p)
+          (hel-ghostel--line-mode-active-p))
+      (ghostel-beginning-of-input-or-line)
+    (call-interactively #'hel-first-non-blank)))
+
+;; d
+(hel-define-command hel-ghostel-cut (count)
+  "Kill selection via PTY in ghostel buffers, otherwise `hel-cut'.
+With region: copies to kill-ring then deletes via PTY backspaces.
+Without region: sends COUNT backspaces to PTY."
+  :multiple-cursors t
+  (interactive "*p")
+  (if (hel-ghostel--active-p)
+      (if (use-region-p)
+          (let ((beg (region-beginning))
+                (end (region-end)))
+            (copy-region-as-kill beg end)
+            (hel-ghostel--delete-region beg end)
+            (deactivate-mark)
+            (hel-extend-selection -1))
+        (dotimes (_ (or count 1))
+          (ghostel--send-encoded "backspace" "")))
+    (hel-cut count)))
+
+;; D
+(hel-define-command hel-ghostel-delete (count)
+  "Delete selection in ghostel buffers via PTY without saving to kill-ring.
+With region: deletes via PTY backspaces.
+Without region: sends COUNT forward-delete keys to PTY."
+  :multiple-cursors t
+  (interactive "*p")
+  (if (hel-ghostel--active-p)
+      (if (use-region-p)
+          (let ((beg (region-beginning))
+                (end (region-end)))
+            (hel-ghostel--delete-region beg end)
+            (deactivate-mark)
+            (hel-extend-selection -1))
+        (dotimes (_ (or count 1))
+          (ghostel--send-encoded "delete" "")))
+    (hel-delete count)))
+
+;; c
+(hel-define-command hel-ghostel-change ()
+  "Delete selection via PTY and enter insert state.
+With region: copies to kill-ring, deletes via PTY, enters insert state.
+Uses the Ctrl-e Ctrl-u readline shortcut for linewise selections on the
+cursor row.  Outside ghostel, falls through to `hel-change'."
+  :multiple-cursors nil
+  (interactive "*")
+  (if (hel-ghostel--active-p)
+      (progn
+        (hel-ghostel--ensure-on-prompt)
+        (when (use-region-p)
+          (let ((beg (region-beginning))
+                (end (region-end)))
+            (copy-region-as-kill beg end)
+            (if (and (hel-linewise-selection-p)
+                     (hel-ghostel--point-on-cursor-row-p))
+                (hel-ghostel--clear-input-line)
+              (hel-ghostel--delete-region beg end))
+            (deactivate-mark)
+            (hel-extend-selection -1)))
+        (hel-insert-state 1))
+    (call-interactively #'hel-change)))
+
+;; p
+(hel-define-command hel-ghostel-paste-after (count)
+  "Paste after cursor via PTY in ghostel buffers, otherwise `hel-paste-after'."
+  :multiple-cursors nil
+  (interactive "*P")
+  (if (hel-ghostel--active-p)
+      (let ((text (current-kill 0))
+            (n (prefix-numeric-value count)))
+        (when text
+          (hel-ghostel--move-cursor-to-point)
+          (ghostel--send-encoded "right" "")
+          (dotimes (_ n)
+            (ghostel--paste-text text))
+          (setq hel-ghostel--cursor-predicted-pos nil)))
+    (call-interactively #'hel-paste-after)))
+
+;; P
+(hel-define-command hel-ghostel-paste-before (count)
+  "Paste before the cursor via PTY; otherwise call `hel-paste-before'."
+  :multiple-cursors nil
+  (interactive "*P")
+  (if (hel-ghostel--active-p)
+      (let ((text (current-kill 0))
+            (n (prefix-numeric-value count)))
+        (when text
+          (hel-ghostel--move-cursor-to-point)
+          (dotimes (_ n)
+            (ghostel--paste-text text))
+          (setq hel-ghostel--cursor-predicted-pos nil)))
+    (call-interactively #'hel-paste-before)))
+
+;; u
+(hel-define-command hel-ghostel-undo (count)
+  "Undo via PTY in ghostel (sends Ctrl-_ COUNT times), otherwise `hel-undo'."
+  :multiple-cursors nil
+  (interactive "*p")
+  (if (hel-ghostel--active-p)
+      (dotimes (_ (or count 1))
+        (ghostel--send-encoded "_" "ctrl"))
+    (hel-undo)))
+
+;; U
+(hel-define-command hel-ghostel-redo (_count)
+  "Redo is not supported in the terminal; outside ghostel calls `hel-redo'."
+  :multiple-cursors nil
+  (interactive "*p")
+  (if (hel-ghostel--active-p)
+      (message "Redo not supported in terminal")
+    (hel-redo)))
+
+;;; ESC routing
+
+(defvar-local hel-ghostel--escape-mode nil
+  "Buffer-local override for ESC routing.
+Initialized from `hel-ghostel-send-escape' when the minor mode turns on.
+Valid values: `auto', `terminal', `hel'.")
+
+(defun hel-ghostel-escape ()
+  "Dispatch insert-state ESC based on `hel-ghostel--escape-mode'.
+In `auto' mode, sends ESC to the terminal when an alternate screen
+buffer is active (DECSET 1049 — vim, less, htop, etc.), otherwise
+switches to Hel Normal state.  In `terminal' mode always sends ESC.
+In `hel' mode always switches to Normal state."
+  (interactive nil ghostel-mode)
+  (if (pcase hel-ghostel--escape-mode
+        ('auto (-some-> ghostel--term (ghostel--mode-enabled 1049)))
+        ('terminal t))
+      (progn
+        (ghostel--snap-to-input)
+        (ghostel--send-encoded "escape" ""))
+    ;; else
+    (hel-normal-state)))
+
+(defun hel-ghostel-toggle-send-escape (&optional arg)
+  "Cycle or set the ESC routing mode for the current buffer.
+Without ARG, cycle through `auto' → `terminal' → `hel' → `auto'.
+With a numeric prefix, select by position modulo 3: 1 → `auto',
+2 → `terminal', 3 (or 0) → `hel', then wraps.
+
+The mode is buffer-local; see `hel-ghostel-send-escape' for the default."
+  (interactive "P")
+  (let ((modes '(auto terminal hel)))
+    (setq hel-ghostel--escape-mode
+          (or (if arg (nth (-> (prefix-numeric-value arg)
+                               (1-)
+                               (mod (length modes)))
+                           modes))
+              (cadr (memq hel-ghostel--escape-mode
+                          modes))
+              (car modes))))
+  (message "hel-ghostel ESC mode: %s" hel-ghostel--escape-mode))
+
+;;; Minor mode
+
+(defvar-keymap hel-ghostel-mode-map
+  :doc "Keymap for `hel-ghostel-mode'."
+  "<remap> <hel-beginning-of-line-command>" #'hel-ghostel-beginning-of-line ; "g s"
+  "<remap> <hel-first-non-blank>"           #'hel-ghostel-first-non-blank   ; "g h"
+  "<remap> <hel-insert>"       #'hel-ghostel-insert       ; "i"
+  "<remap> <hel-append>"       #'hel-ghostel-append       ; "a"
+  "<remap> <hel-insert-line>"  #'hel-ghostel-insert-line  ; "I"
+  "<remap> <hel-append-line>"  #'hel-ghostel-append-line  ; "A"
+  "<remap> <hel-change>"       #'hel-ghostel-change       ; "c"
+  "<remap> <hel-cut>"          #'hel-ghostel-cut          ; "d"
+  "<remap> <hel-delete>"       #'hel-ghostel-delete       ; "D"
+  "<remap> <hel-paste-after>"  #'hel-ghostel-paste-after  ; "p"
+  "<remap> <hel-paste-before>" #'hel-ghostel-paste-before ; "P"
+  "<remap> <hel-undo>"         #'hel-ghostel-undo         ; "u"
+  "<remap> <hel-redo>"         #'hel-ghostel-redo)        ; "U"
+
+(hel-keymap-set hel-ghostel-mode-map :state 'insert
+  "<escape>" #'hel-ghostel-escape)
+
+;;;###autoload
+(define-minor-mode hel-ghostel-mode
+  "Minor mode for Hel integration in ghostel terminal buffers.
+Synchronizes the terminal cursor with Emacs point during Hel
+state transitions."
+  :lighter " Hel"
+  :keymap hel-ghostel-mode-map
+  (if hel-ghostel-mode
+      (progn
+        (setq hel-ghostel--escape-mode hel-ghostel-send-escape)
+        (advice-add 'ghostel--redraw
+                    :around #'hel-ghostel--redraw-a)
+        (advice-add 'ghostel--set-cursor-style
+                    :around #'hel-ghostel--override-cursor-style)
+        (hel-update-cursor))
+    ;; else
+    (advice-remove 'ghostel--redraw #'hel-ghostel--redraw-a)
+    (advice-remove 'ghostel--set-cursor-style #'hel-ghostel--override-cursor-style)))
+
+;;; .
+(provide 'hel-ghostel)
+;;; hel-ghostel.el ends here
