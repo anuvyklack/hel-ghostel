@@ -1,0 +1,18 @@
+* hel-ghostel
+
+Provides Hel integration for the Ghostel terminal emulator.
+
+Synchronizes the terminal cursor with Emacs point during Hel state transitions
+so that normal-state navigation works correctly.
+
+** Install
+
+#+begin_src emacs-lisp
+(use-package hel-ghostel
+  :after (ghostel hel)
+  :hook (ghostel-mode . hel-ghostel-mode))
+#+end_src
+
+** Keybindings
+
+
