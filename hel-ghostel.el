@@ -83,22 +83,14 @@ Hel's default buffer-editing operators work correctly there."
   (when ghostel--cursor-char-pos
     (1- (line-number-at-pos ghostel--cursor-char-pos t))))
 
-(defun hel-ghostel--point-viewport-row ()
-  "Return the viewport row at point, 0-indexed.
-Subtracts the scrollback line count from the buffer line so the
-result is comparable to `ghostel--cursor-pos''s row."
-  (if ghostel--term-rows
-      (- (line-number-at-pos (point) t)
-         (hel-ghostel--scrollback)
-         1)
-    0))
-
 (defvar-local hel-ghostel--last-cursor-line nil
   "Buffer line where the previous redraw placed the terminal cursor.
 Used by `hel-ghostel--redraw-a' to detect prompt-line scrolling.")
 
 (defvar-local hel-ghostel--cursor-predicted-pos nil
-  "Predicted terminal cursor (COL . VIEWPORT-ROW), or nil.
+  "Predicted cursor position (COL . BUFFER-LINE), or nil.
+COL is an Emacs `current-column' value.
+BUFFER-LINE is 1-indexed as returned by `line-number-at-pos'.
 
 When a command sends multiple key sequences to the terminal, the
 terminals' cursor position in `ghostel--cursor-pos' becomes outdated:
@@ -115,17 +107,22 @@ Uses the predicted cursor position when available. Updates the
 prediction after sending keys so a follow-up call within the same
 command sees the correct baseline."
   (when ghostel--term
-    (-let* (((tcol . trow) (or hel-ghostel--cursor-predicted-pos
-                               ghostel--cursor-pos))
-            (ecol (current-column))
-            (erow (hel-ghostel--point-viewport-row))
-            (dy (- erow trow))
-            (dx (- ecol tcol)))
-      (cond ((< 0 dy) (dotimes (_ dy) (ghostel--send-encoded "down" "")))
+    (-let* (((tcon . tline)
+             (or hel-ghostel--cursor-predicted-pos
+                 (if ghostel--cursor-char-pos
+                     (cons (save-excursion
+                             (goto-char ghostel--cursor-char-pos)
+                             (current-column))
+                           (line-number-at-pos ghostel--cursor-char-pos t)))))
+            (ecol  (current-column))
+            (eline (line-number-at-pos (point) t))
+            (dy    (if tline (- eline tline) 0))
+            (dx    (- ecol (or tcol 0))))
+      (cond ((< 0 dy) (dotimes (_ dy)       (ghostel--send-encoded "down" "")))
             ((< dy 0) (dotimes (_ (abs dy)) (ghostel--send-encoded "up" ""))))
-      (cond ((< 0 dx) (dotimes (_ dx) (ghostel--send-encoded "right" "")))
+      (cond ((< 0 dx) (dotimes (_ dx)       (ghostel--send-encoded "right" "")))
             ((< dx 0) (dotimes (_ (abs dx)) (ghostel--send-encoded "left" ""))))
-      (setq hel-ghostel--cursor-predicted-pos (cons ecol erow)))))
+      (setq hel-ghostel--cursor-predicted-pos (cons ecol eline)))))
 
 (defvar-local hel-ghostel--sync-point-on-next-redraw nil
   "When non-nil, the next `ghostel--redraw' will move point to the position of
@@ -207,12 +204,10 @@ as history navigation."
   (cond (hel-ghostel--sync-inhibit
          (setq hel-ghostel--sync-inhibit nil))
         ((hel-ghostel--active-p)
-         (-let ((erow (hel-ghostel--point-viewport-row))
-                ((_ . trow) ghostel--cursor-pos))
-           (if (= erow trow)
-               (hel-ghostel--move-cursor-to-point)
-             (when ghostel--cursor-char-pos
-               (goto-char ghostel--cursor-char-pos)))))))
+         (if (= (line-number-at-pos (point) t)
+                (line-number-at-pos ghostel--cursor-char-pos t))
+             (hel-ghostel--move-cursor-to-point)
+           (goto-char ghostel--cursor-char-pos)))))
 
 ;;; Editing primitives
 
@@ -243,10 +238,10 @@ meaningful character (see `hel-ghostel--meaningful-length')."
       (setq hel-ghostel--cursor-predicted-pos nil))))
 
 (defun hel-ghostel--point-on-cursor-row-p ()
-  "Non-nil when point is on the same viewport row as the terminal cursor."
-  (and-let* ((trow (cdr ghostel--cursor-pos))
-             (prow (hel-ghostel--point-viewport-row))
-             ((= trow prow)))))
+  "Non-nil when point is on the same buffer line as the terminal cursor."
+  (and ghostel--cursor-char-pos
+       (= (line-number-at-pos (point) t)
+          (line-number-at-pos ghostel--cursor-char-pos t))))
 
 (defun hel-ghostel--clear-input-line ()
   "Clear the active input line via Ctrl-e Ctrl-u.
@@ -471,7 +466,7 @@ The mode is buffer-local; see `hel-ghostel-send-escape' for the default."
   (let ((modes '(auto terminal hel)))
     (setq hel-ghostel--escape-mode
           (or (if arg (nth (-> (prefix-numeric-value arg)
-                               (- 1)
+                               (1-)
                                (% (length modes)))
                            modes))
               (cadr (memq hel-ghostel--escape-mode
