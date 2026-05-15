@@ -78,24 +78,10 @@ Hel's default buffer-editing operators work correctly there."
 
 ;;; Cursor synchronization
 
-(defun hel-ghostel--scrollback ()
-  "Return the number of scrollback lines above the viewport, or 0."
-  (max 0 (- (count-lines (point-min) (point-max))
-            ghostel--term-rows)))
-
-(defun hel-ghostel--move-point-to-cursor ()
-  "Move Emacs point to the terminal cursor position.
-`ghostel--cursor-pos' holds the viewport-relative (COL . ROW), so
-the row must be offset by the scrollback line count."
-  (-when-let ((col . row) ghostel--cursor-pos)
-    (goto-char (point-min))
-    (forward-line (+ row (hel-ghostel--scrollback)))
-    (move-to-column col)))
-
 (defun hel-ghostel--cursor-buffer-line ()
   "Return the 0-indexed buffer line at the terminal cursor, or nil."
-  (-if-let ((_ . row) ghostel--cursor-pos)
-      (+ row (hel-ghostel--scrollback))))
+  (when ghostel--cursor-char-pos
+    (1- (line-number-at-pos ghostel--cursor-char-pos t))))
 
 (defun hel-ghostel--point-viewport-row ()
   "Return the viewport row at point, 0-indexed.
@@ -181,9 +167,7 @@ own the screen and drive their own redraw cycle."
                                       (= pre-line
                                          hel-ghostel--last-cursor-line))))
         (funcall orig-fun term full)
-        (when hel-ghostel--sync-point-on-next-redraw
-          (hel-ghostel--move-point-to-cursor)
-          (setq hel-ghostel--sync-point-on-next-redraw nil))
+        (setq hel-ghostel--sync-point-on-next-redraw nil)
         (let* ((post-cursor-line (hel-ghostel--cursor-buffer-line))
                (prompt-moved (and was-on-prompt-line
                                   post-cursor-line
@@ -227,7 +211,8 @@ as history navigation."
                 ((_ . trow) ghostel--cursor-pos))
            (if (= erow trow)
                (hel-ghostel--move-cursor-to-point)
-             (hel-ghostel--move-point-to-cursor))))))
+             (when ghostel--cursor-char-pos
+               (goto-char ghostel--cursor-char-pos)))))))
 
 ;;; Editing primitives
 
