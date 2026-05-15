@@ -83,7 +83,7 @@ Hel's default buffer-editing operators work correctly there."
   (max 0 (- (count-lines (point-min) (point-max))
             ghostel--term-rows)))
 
-(defun hel-ghostel--reset-cursor-point ()
+(defun hel-ghostel--move-point-to-cursor ()
   "Move Emacs point to the terminal cursor position.
 `ghostel--cursor-pos' holds the viewport-relative (COL . ROW), so
 the row must be offset by the scrollback line count."
@@ -114,25 +114,20 @@ Used by `hel-ghostel--redraw-a' to detect prompt-line scrolling.")
 (defvar-local hel-ghostel--cursor-predicted-pos nil
   "Predicted terminal cursor (COL . VIEWPORT-ROW), or nil.
 
-When a command sends multiple key sequences to the terminal, the live
-cursor in `ghostel--cursor-pos' is not yet updated: the terminal has
-not finished processing the keys.  This variable stores the predicted
-position after the last send, so follow-up sends within the same
-command use an accurate baseline instead of the outdated live value.
+When a command sends multiple key sequences to the terminal, the
+terminals' cursor position in `ghostel--cursor-pos' becomes outdated:
+the terminal has not finished processing the keys. This variable stores
+the predicted position after the last send, so follow-up sends within
+the same command use an accurate baseline instead of the outdated value.
 
-Reset to nil by `hel-ghostel--redraw-a' after each render, when the live
-value becomes accurate again.")
+Reset to nil by `hel-ghostel--redraw-a' after each render, when the terminal
+cursor position becomes accurate again.")
 
-(defun hel-ghostel--predicted-or-live ()
-  "Return best-known terminal cursor (COL . VIEWPORT-ROW), or nil."
-  (or hel-ghostel--cursor-predicted-pos
-      ghostel--cursor-pos))
-
-(defun hel-ghostel--cursor-to-point ()
-  "Move the terminal cursor to Emacs point by sending arrow keys.
-Uses the predicted cursor position when available, falling back to the
-live value.  Updates the prediction after sending keys so a follow-up
-call within the same command sees the correct baseline."
+(defun hel-ghostel--move-cursor-to-point ()
+  "Move the terminal cursor to Emacs point position by sending arrow keys.
+Uses the predicted cursor position when available. Updates the
+prediction after sending keys so a follow-up call within the same
+command sees the correct baseline."
   (when ghostel--term
     (-let* (((tcol . trow) (or hel-ghostel--cursor-predicted-pos
                                ghostel--cursor-pos))
@@ -140,13 +135,11 @@ call within the same command sees the correct baseline."
             (erow (hel-ghostel--point-viewport-row))
             (dy (- erow trow))
             (dx (- ecol tcol)))
-      (cond ((> dy 0) (dotimes (_ dy) (ghostel--send-encoded "down" "")))
+      (cond ((< 0 dy) (dotimes (_ dy) (ghostel--send-encoded "down" "")))
             ((< dy 0) (dotimes (_ (abs dy)) (ghostel--send-encoded "up" ""))))
-      (cond ((> dx 0) (dotimes (_ dx) (ghostel--send-encoded "right" "")))
+      (cond ((< 0 dx) (dotimes (_ dx) (ghostel--send-encoded "right" "")))
             ((< dx 0) (dotimes (_ (abs dx)) (ghostel--send-encoded "left" ""))))
       (setq hel-ghostel--cursor-predicted-pos (cons ecol erow)))))
-
-;;; Redraw: preserve point across the native call
 
 (defvar-local hel-ghostel--sync-point-on-next-redraw nil
   "When non-nil, the next `ghostel--redraw' will move point to the position of
@@ -189,8 +182,8 @@ own the screen and drive their own redraw cycle."
                                          hel-ghostel--last-cursor-line))))
         (funcall orig-fun term full)
         (when hel-ghostel--sync-point-on-next-redraw
-          (setq hel-ghostel--sync-point-on-next-redraw nil)
-          (hel-ghostel--reset-cursor-point))
+          (hel-ghostel--move-point-to-cursor)
+          (setq hel-ghostel--sync-point-on-next-redraw nil))
         (let* ((post-cursor-line (hel-ghostel--cursor-buffer-line))
                (prompt-moved (and was-on-prompt-line
                                   post-cursor-line
@@ -233,8 +226,8 @@ as history navigation."
          (-let ((erow (hel-ghostel--point-viewport-row))
                 ((_ . trow) ghostel--cursor-pos))
            (if (= erow trow)
-               (hel-ghostel--cursor-to-point)
-             (hel-ghostel--reset-cursor-point))))))
+               (hel-ghostel--move-cursor-to-point)
+             (hel-ghostel--move-point-to-cursor))))))
 
 ;;; Editing primitives
 
@@ -246,7 +239,7 @@ in the buffer but are not part of the TUI's input model.
 
 Only applied when TEXT spans more than one buffer line; single-line trailing
 whitespace is treated as real content."
-  (if (string-match-p "\n" text)
+  (if (string-search "\n" text)
       (length (replace-regexp-in-string "[ \t]+\\(\n\\|\\'\\)" "\\1" text))
     (length text)))
 
@@ -254,11 +247,11 @@ whitespace is treated as real content."
   "Delete text between BEG and END via the terminal PTY.
 Moves terminal cursor to END, then sends one backspace per
 meaningful character (see `hel-ghostel--meaningful-length')."
-  (let ((count (hel-ghostel--meaningful-length
-                (buffer-substring-no-properties beg end))))
+  (let ((count (-> (buffer-substring-no-properties beg end)
+                   (hel-ghostel--meaningful-length))))
     (when (< 0 count)
       (goto-char end)
-      (hel-ghostel--cursor-to-point)
+      (hel-ghostel--move-cursor-to-point)
       (dotimes (_ count)
         (ghostel--send-encoded "backspace" ""))
       (goto-char beg)
@@ -268,11 +261,11 @@ meaningful character (see `hel-ghostel--meaningful-length')."
   "Non-nil when point is on the same viewport row as the terminal cursor."
   (and-let* ((trow (cdr ghostel--cursor-pos))
              (prow (hel-ghostel--point-viewport-row))
-             ((= prow trow)))))
+             ((= trow prow)))))
 
 (defun hel-ghostel--clear-input-line ()
   "Clear the active input line via Ctrl-e Ctrl-u.
-Readline/zle/prompt_toolkit all bind this to end-of-line then
+Readline/zle/prompt_toolki all bind this to end-of-line then
 kill-from-start, clearing the input without needing prompt geometry.
 Sets `hel-ghostel--sync-point-on-next-redraw' so the redraw triggered
 by the shell's echo lands point at the new cursor position."
@@ -293,7 +286,7 @@ Outside ghostel, falls through to `hel-insert-line'."
   :multiple-cursors nil
   (interactive "*")
   (cond ((hel-ghostel--active-p)
-         (hel-ghostel--cursor-to-point)
+         (hel-ghostel--move-cursor-to-point)
          (ghostel--send-encoded "a" "ctrl")
          (setq hel-ghostel--cursor-predicted-pos nil
                hel-ghostel--sync-inhibit t)
@@ -313,7 +306,7 @@ jumps to `ghostel--line-input-end' in line mode."
   :multiple-cursors nil
   (interactive "*")
   (cond ((hel-ghostel--active-p)
-         (hel-ghostel--cursor-to-point)
+         (hel-ghostel--move-cursor-to-point)
          (ghostel--send-encoded "e" "ctrl")
          (setq hel-ghostel--cursor-predicted-pos nil
                hel-ghostel--sync-inhibit t)
@@ -400,7 +393,8 @@ cursor row.  Outside ghostel, falls through to `hel-change'."
           (let ((beg (region-beginning))
                 (end (region-end)))
             (copy-region-as-kill beg end)
-            (if (and (hel-linewise-selection-p) (hel-ghostel--point-on-cursor-row-p))
+            (if (and (hel-linewise-selection-p)
+                     (hel-ghostel--point-on-cursor-row-p))
                 (hel-ghostel--clear-input-line)
               (hel-ghostel--delete-region beg end))
             (deactivate-mark)
@@ -418,7 +412,7 @@ cursor row.  Outside ghostel, falls through to `hel-change'."
       (let ((text (current-kill 0))
             (n (prefix-numeric-value count)))
         (when text
-          (hel-ghostel--cursor-to-point)
+          (hel-ghostel--move-cursor-to-point)
           (ghostel--send-encoded "right" "")
           (dotimes (_ n)
             (ghostel--paste-text text))
@@ -434,7 +428,7 @@ cursor row.  Outside ghostel, falls through to `hel-change'."
       (let ((text (current-kill 0))
             (n (prefix-numeric-value count)))
         (when text
-          (hel-ghostel--cursor-to-point)
+          (hel-ghostel--move-cursor-to-point)
           (dotimes (_ n)
             (ghostel--paste-text text))
           (setq hel-ghostel--cursor-predicted-pos nil)))
@@ -530,8 +524,7 @@ state transitions."
       (progn
         (setq hel-ghostel--escape-mode hel-ghostel-send-escape)
         (add-hook 'hel-insert-state-enter-hook
-                  #'hel-ghostel--insert-state-enter-h
-                  90 t)
+                  #'hel-ghostel--insert-state-enter-h 90 t)
         (advice-add 'ghostel--redraw
                     :around #'hel-ghostel--redraw-a)
         (advice-add 'ghostel--set-cursor-style
