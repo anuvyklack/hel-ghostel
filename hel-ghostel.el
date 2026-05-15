@@ -120,9 +120,8 @@ not finished processing the keys.  This variable stores the predicted
 position after the last send, so follow-up sends within the same
 command use an accurate baseline instead of the outdated live value.
 
-Nil means no prediction is available; callers fall back to
-`ghostel--cursor-pos'.  Reset to nil by `hel-ghostel--redraw-a' after
-each render, when the live value becomes accurate again.")
+Reset to nil by `hel-ghostel--redraw-a' after each render, when the live
+value becomes accurate again.")
 
 (defun hel-ghostel--predicted-or-live ()
   "Return best-known terminal cursor (COL . VIEWPORT-ROW), or nil."
@@ -135,7 +134,8 @@ Uses the predicted cursor position when available, falling back to the
 live value.  Updates the prediction after sending keys so a follow-up
 call within the same command sees the correct baseline."
   (when ghostel--term
-    (-let* (((tcol . trow) (hel-ghostel--predicted-or-live))
+    (-let* (((tcol . trow) (or hel-ghostel--cursor-predicted-pos
+                               ghostel--cursor-pos))
             (ecol (current-column))
             (erow (hel-ghostel--point-viewport-row))
             (dy (- erow trow))
