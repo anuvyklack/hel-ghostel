@@ -82,6 +82,10 @@ Hel's default buffer-editing operators work correctly there."
   "Buffer line where the previous redraw placed the terminal cursor.
 Used by `hel-ghostel--redraw-a' to detect prompt-line scrolling.")
 
+(defvar-local hel-ghostel--alt-screen nil
+  "Non-nil when the terminal was in 1049 alt-screen on the previous redraw.
+Used by `hel-ghostel--redraw-a' to detect entry into alt-screen mode.")
+
 (defvar-local hel-ghostel--cursor-predicted-pos nil
   "Predicted cursor position (COL . LINE), or nil.
 COL is an Emacs `current-column' value.
@@ -146,30 +150,33 @@ positions — neither needs saving here.
 ORIG-FUN is the advised `ghostel--redraw' called with TERM and FULL.
 Skipped when the terminal is in alt-screen mode (1049); apps there
 own the screen and drive their own redraw cycle."
-  (if (and hel-ghostel-mode
-           (not (ghostel--mode-enabled term 1049)))
-      (let* ((saved-point (unless (or hel-ghostel--sync-point-on-next-redraw
-                                      hel-insert-state)
-                            (point)))
-             (pre-point-line (-some-> saved-point (line-number-at-pos t)))
-             (point-on-cursor-line? (and pre-point-line
-                                         hel-ghostel--cursor-line
-                                         (= pre-point-line
-                                            hel-ghostel--cursor-line))))
-        (funcall orig-fun term full)
-        (setq hel-ghostel--sync-point-on-next-redraw nil)
-        (let* ((post-cursor-line (-some-> ghostel--cursor-char-pos
-                                   (line-number-at-pos t)))
-               (prompt-moved (and point-on-cursor-line?
-                                  post-cursor-line
-                                  (/= post-cursor-line
-                                      pre-point-line))))
-          (when (and saved-point (not prompt-moved))
-            (goto-char (min saved-point (point-max))))
-          (setq hel-ghostel--cursor-line post-cursor-line))
-        (setq hel-ghostel--cursor-predicted-pos nil))
-    ;; else
-    (funcall orig-fun term full)))
+  (let ((alt-screen-p (and term (ghostel--mode-enabled term 1049))))
+    (when hel-ghostel-mode
+      (when (and alt-screen-p (not hel-ghostel--alt-screen))
+        (hel-insert-state 1))
+      (setq hel-ghostel--alt-screen alt-screen-p))
+    (if (and hel-ghostel-mode (not alt-screen-p))
+        (let* ((saved-point (unless (or hel-ghostel--sync-point-on-next-redraw
+                                        hel-insert-state)
+                              (point)))
+               (pre-point-line (-some-> saved-point (line-number-at-pos t)))
+               (point-on-cursor-line? (and pre-point-line
+                                           hel-ghostel--cursor-line
+                                           (= pre-point-line
+                                              hel-ghostel--cursor-line))))
+          (funcall orig-fun term full)
+          (setq hel-ghostel--sync-point-on-next-redraw nil)
+          (let* ((post-cursor-line (-some-> ghostel--cursor-char-pos
+                                     (line-number-at-pos t)))
+                 (prompt-moved (and point-on-cursor-line?
+                                    post-cursor-line
+                                    (/= post-cursor-line
+                                        pre-point-line))))
+            (when (and saved-point (not prompt-moved))
+              (goto-char (min saved-point (point-max))))
+            (setq hel-ghostel--cursor-line post-cursor-line))
+          (setq hel-ghostel--cursor-predicted-pos nil))
+      (funcall orig-fun term full))))
 
 ;;; Cursor style: let Hel control cursor shape
 
