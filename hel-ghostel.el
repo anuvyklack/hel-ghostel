@@ -189,29 +189,6 @@ In alt-screen mode, defer to the terminal's cursor style."
       (hel-update-cursor)
     (funcall orig-fun style visible)))
 
-;;; Insert state entry hook
-
-(defvar-local hel-ghostel--sync-inhibit nil
-  "When non-nil, skip arrow-key sync in the insert-state-entry hook.
-Set by the \"I\" / \"A\" commands (which send Ctrl-a / Ctrl-e) and
-by the \"c\" command (which positions the cursor itself).")
-
-(defun hel-ghostel--insert-state-enter-h ()
-  "Sync terminal cursor with Emacs point when on switching to Hel Insert state.
-Skipped when `hel-ghostel--sync-inhibit' is set (by the I/A/c commands
-which already positioned the cursor).  Also skipped outside semi-char.
-When point is on a different row from the terminal cursor, snap back
-to the terminal cursor to avoid sending arrows the shell interprets
-as history navigation."
-  (when hel-ghostel-mode
-    (cond (hel-ghostel--sync-inhibit
-           (setq hel-ghostel--sync-inhibit nil))
-          ((hel-ghostel--active-p)
-           (if (= (line-number-at-pos (point) t)
-                  hel-ghostel--cursor-line)
-               (hel-ghostel--move-cursor-to-point)
-             (goto-char ghostel--cursor-char-pos))))))
-
 ;;; Editing primitives
 
 (defun hel-ghostel--meaningful-length (text)
@@ -259,6 +236,52 @@ by the shell's echo lands point at the new cursor position."
 
 ;;; Normal-state commands
 
+(defun hel-ghostel--sync-on-insert ()
+  "Sync terminal cursor with point before entering Insert state.
+In semi-char mode: sends arrow keys to move the terminal cursor to
+point when on the cursor row; snaps point to the terminal cursor
+otherwise (to avoid sending arrows the shell interprets as history
+navigation)."
+  (when (hel-ghostel--active-p)
+    (if (= (line-number-at-pos (point) t)
+           hel-ghostel--cursor-line)
+        (hel-ghostel--move-cursor-to-point)
+      (goto-char ghostel--cursor-char-pos))))
+
+;; i
+(hel-define-command hel-ghostel-insert ()
+  "Switch to Insert state, syncing terminal cursor with point first.
+In semi-char mode: syncs cursor then enters Insert.
+Outside semi-char: falls through to `hel-insert'."
+  :multiple-cursors nil
+  (interactive "*")
+  (if (hel-ghostel--active-p)
+      (progn
+        (when (use-region-p)
+          (hel-with-each-cursor
+            (hel-ensure-region-direction -1)))
+        (hel-ghostel--sync-on-insert)
+        (hel-insert-state 1))
+    (call-interactively #'hel-insert)))
+
+;; a
+(hel-define-command hel-ghostel-append ()
+  "Switch to Insert state after region, syncing terminal cursor first.
+In semi-char mode: syncs cursor then enters Insert.
+Outside semi-char: falls through to `hel-append'."
+  :multiple-cursors nil
+  (interactive "*")
+  (if (hel-ghostel--active-p)
+      (progn
+        (when (use-region-p)
+          (hel-with-each-cursor
+            (hel-ensure-region-direction 1)
+            (when (hel-linewise-selection-p)
+              (backward-char))))
+        (hel-ghostel--sync-on-insert)
+        (hel-insert-state 1))
+    (call-interactively #'hel-append)))
+
 ;; I
 (hel-define-command hel-ghostel-insert-line ()
   "Switch to insert state at the beginning of the current line.
@@ -271,12 +294,10 @@ Outside ghostel, falls through to `hel-insert-line'."
   (cond ((hel-ghostel--active-p)
          (hel-ghostel--move-cursor-to-point)
          (ghostel--send-encoded "a" "ctrl")
-         (setq hel-ghostel--cursor-predicted-pos nil
-               hel-ghostel--sync-inhibit t)
+         (setq hel-ghostel--cursor-predicted-pos nil)
          (hel-insert-state 1))
         ((hel-ghostel--line-mode-active-p)
          (goto-char (marker-position ghostel--line-input-start))
-         (setq hel-ghostel--sync-inhibit t)
          (hel-insert-state 1))
         (t
          (call-interactively #'hel-insert-line))))
@@ -291,12 +312,10 @@ jumps to `ghostel--line-input-end' in line mode."
   (cond ((hel-ghostel--active-p)
          (hel-ghostel--move-cursor-to-point)
          (ghostel--send-encoded "e" "ctrl")
-         (setq hel-ghostel--cursor-predicted-pos nil
-               hel-ghostel--sync-inhibit t)
+         (setq hel-ghostel--cursor-predicted-pos nil)
          (hel-insert-state 1))
         ((hel-ghostel--line-mode-active-p)
          (goto-char (marker-position ghostel--line-input-end))
-         (setq hel-ghostel--sync-inhibit t)
          (hel-insert-state 1))
         (t
          (call-interactively #'hel-append-line))))
@@ -382,7 +401,6 @@ cursor row.  Outside ghostel, falls through to `hel-change'."
               (hel-ghostel--delete-region beg end))
             (deactivate-mark)
             (hel-extend-selection -1)))
-        (setq hel-ghostel--sync-inhibit t)
         (hel-insert-state 1))
     (call-interactively #'hel-change)))
 
@@ -484,6 +502,8 @@ The mode is buffer-local; see `hel-ghostel-send-escape' for the default."
   :doc "Keymap for `hel-ghostel-mode'."
   "<remap> <hel-beginning-of-line-command>" #'hel-ghostel-beginning-of-line ; "g s"
   "<remap> <hel-first-non-blank>"           #'hel-ghostel-first-non-blank   ; "g h"
+  "<remap> <hel-insert>"       #'hel-ghostel-insert       ; "i"
+  "<remap> <hel-append>"       #'hel-ghostel-append       ; "a"
   "<remap> <hel-insert-line>"  #'hel-ghostel-insert-line  ; "I"
   "<remap> <hel-append-line>"  #'hel-ghostel-append-line  ; "A"
   "<remap> <hel-change>"       #'hel-ghostel-change       ; "c"
@@ -507,15 +527,12 @@ state transitions."
   (if hel-ghostel-mode
       (progn
         (setq hel-ghostel--escape-mode hel-ghostel-send-escape)
-        (add-hook 'hel-insert-state-enter-hook
-                  #'hel-ghostel--insert-state-enter-h 90 t)
         (advice-add 'ghostel--redraw
                     :around #'hel-ghostel--redraw-a)
         (advice-add 'ghostel--set-cursor-style
                     :around #'hel-ghostel--override-cursor-style)
         (hel-update-cursor))
     ;; else
-    (remove-hook 'hel-insert-state-enter-hook #'hel-ghostel--insert-state-enter-h t)
     (advice-remove 'ghostel--redraw #'hel-ghostel--redraw-a)
     (advice-remove 'ghostel--set-cursor-style #'hel-ghostel--override-cursor-style)))
 
