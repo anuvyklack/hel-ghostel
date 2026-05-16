@@ -78,19 +78,14 @@ Hel's default buffer-editing operators work correctly there."
 
 ;;; Cursor synchronization
 
-(defun hel-ghostel--cursor-buffer-line ()
-  "Return the 0-indexed buffer line at the terminal cursor, or nil."
-  (when ghostel--cursor-char-pos
-    (1- (line-number-at-pos ghostel--cursor-char-pos t))))
-
 (defvar-local hel-ghostel--last-cursor-line nil
   "Buffer line where the previous redraw placed the terminal cursor.
 Used by `hel-ghostel--redraw-a' to detect prompt-line scrolling.")
 
 (defvar-local hel-ghostel--cursor-predicted-pos nil
-  "Predicted cursor position (COL . BUFFER-LINE), or nil.
+  "Predicted cursor position (COL . LINE), or nil.
 COL is an Emacs `current-column' value.
-BUFFER-LINE is 1-indexed as returned by `line-number-at-pos'.
+LINE is 1-indexed as returned by `line-number-at-pos'.
 
 When a command sends multiple key sequences to the terminal, the
 terminals' cursor position in `ghostel--cursor-pos' becomes outdated:
@@ -107,7 +102,7 @@ Uses the predicted cursor position when available. Updates the
 prediction after sending keys so a follow-up call within the same
 command sees the correct baseline."
   (when ghostel--term
-    (-let* (((tcon . tline)
+    (-let* (((tcol . tline)
              (or hel-ghostel--cursor-predicted-pos
                  (if ghostel--cursor-char-pos
                      (cons (save-excursion
@@ -154,23 +149,23 @@ Skipped when the terminal is in alt-screen mode (1049); apps there
 own the screen and drive their own redraw cycle."
   (if (and hel-ghostel-mode
            (not (ghostel--mode-enabled term 1049)))
-      (let* ((preserve-point? (not (or hel-ghostel--sync-point-on-next-redraw
-                                       hel-insert-state)))
-             (saved-point (if preserve-point? (point)))
-             (pre-line    (if preserve-point?
-                              (1- (line-number-at-pos (point) t))))
-             (was-on-prompt-line (and pre-line
+      (let* ((saved-point (unless (or hel-ghostel--sync-point-on-next-redraw
+                                      hel-insert-state)
+                            (point)))
+             (pre-point-line (-some-> saved-point (line-number-at-pos t)))
+             (was-on-prompt-line (and pre-point-line
                                       hel-ghostel--last-cursor-line
-                                      (= pre-line
+                                      (= pre-point-line
                                          hel-ghostel--last-cursor-line))))
         (funcall orig-fun term full)
         (setq hel-ghostel--sync-point-on-next-redraw nil)
-        (let* ((post-cursor-line (hel-ghostel--cursor-buffer-line))
+        (let* ((post-cursor-line (-some-> ghostel--cursor-char-pos
+                                   (line-number-at-pos t)))
                (prompt-moved (and was-on-prompt-line
                                   post-cursor-line
                                   (/= post-cursor-line
-                                      pre-line))))
-          (when (and preserve-point? (not prompt-moved))
+                                      pre-point-line))))
+          (when (and saved-point (not prompt-moved))
             (goto-char (min saved-point (point-max))))
           (setq hel-ghostel--last-cursor-line post-cursor-line))
         (setq hel-ghostel--cursor-predicted-pos nil))
