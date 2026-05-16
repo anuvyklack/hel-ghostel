@@ -236,17 +236,17 @@ by the shell's echo lands point at the new cursor position."
 
 ;;; Normal-state commands
 
-(defun hel-ghostel--sync-on-insert ()
-  "Sync terminal cursor with point before entering Insert state.
-In semi-char mode: sends arrow keys to move the terminal cursor to
-point when on the cursor row; snaps point to the terminal cursor
-otherwise (to avoid sending arrows the shell interprets as history
-navigation)."
-  (when (hel-ghostel--active-p)
-    (if (= (line-number-at-pos (point) t)
-           hel-ghostel--cursor-line)
-        (hel-ghostel--move-cursor-to-point)
-      (goto-char ghostel--cursor-char-pos))))
+(defun hel-ghostel--ensure-on-prompt ()
+  "Snap point to the terminal cursor when in scrollback.
+When point is not on the cursor row, disables multiple cursors, deactivates
+mark, moves point to `ghostel--cursor-char-pos', and clears the predicted
+cursor position.  Called at the start of every insert-state entry command
+in semi-char mode so subsequent positioning operates on the prompt row."
+  (unless (hel-ghostel--point-on-cursor-row-p)
+    (hel-disable-multiple-cursors-mode)
+    (deactivate-mark)
+    (goto-char ghostel--cursor-char-pos)
+    (setq hel-ghostel--cursor-predicted-pos nil)))
 
 ;; i
 (hel-define-command hel-ghostel-insert ()
@@ -257,10 +257,11 @@ Outside semi-char: falls through to `hel-insert'."
   (interactive "*")
   (if (hel-ghostel--active-p)
       (progn
+        (hel-ghostel--ensure-on-prompt)
         (when (use-region-p)
           (hel-with-each-cursor
             (hel-ensure-region-direction -1)))
-        (hel-ghostel--sync-on-insert)
+        (hel-ghostel--move-cursor-to-point)
         (hel-insert-state 1))
     (call-interactively #'hel-insert)))
 
@@ -273,12 +274,13 @@ Outside semi-char: falls through to `hel-append'."
   (interactive "*")
   (if (hel-ghostel--active-p)
       (progn
+        (hel-ghostel--ensure-on-prompt)
         (when (use-region-p)
           (hel-with-each-cursor
             (hel-ensure-region-direction 1)
             (when (hel-linewise-selection-p)
               (backward-char))))
-        (hel-ghostel--sync-on-insert)
+        (hel-ghostel--move-cursor-to-point)
         (hel-insert-state 1))
     (call-interactively #'hel-append)))
 
@@ -292,6 +294,7 @@ Outside ghostel, falls through to `hel-insert-line'."
   :multiple-cursors nil
   (interactive "*")
   (cond ((hel-ghostel--active-p)
+         (hel-ghostel--ensure-on-prompt)
          (hel-ghostel--move-cursor-to-point)
          (ghostel--send-encoded "a" "ctrl")
          (setq hel-ghostel--cursor-predicted-pos nil)
@@ -310,6 +313,7 @@ jumps to `ghostel--line-input-end' in line mode."
   :multiple-cursors nil
   (interactive "*")
   (cond ((hel-ghostel--active-p)
+         (hel-ghostel--ensure-on-prompt)
          (hel-ghostel--move-cursor-to-point)
          (ghostel--send-encoded "e" "ctrl")
          (setq hel-ghostel--cursor-predicted-pos nil)
@@ -391,6 +395,7 @@ cursor row.  Outside ghostel, falls through to `hel-change'."
   (interactive "*")
   (if (hel-ghostel--active-p)
       (progn
+        (hel-ghostel--ensure-on-prompt)
         (when (use-region-p)
           (let ((beg (region-beginning))
                 (end (region-end)))
