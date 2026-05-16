@@ -101,18 +101,17 @@ cursor position becomes accurate again.")
 Uses the predicted cursor position when available. Updates the
 prediction after sending keys so a follow-up call within the same
 command sees the correct baseline."
-  (when ghostel--term
-    (-let* (((tcol . tline)
-             (or hel-ghostel--cursor-predicted-pos
-                 (if ghostel--cursor-char-pos
-                     (cons (save-excursion
-                             (goto-char ghostel--cursor-char-pos)
-                             (current-column))
-                           (line-number-at-pos ghostel--cursor-char-pos t)))))
+  (when (and ghostel--term (or ghostel--cursor-char-pos
+                               hel-ghostel--cursor-predicted-pos))
+    (-let* (((tcol . tline) (or hel-ghostel--cursor-predicted-pos
+                                (cons (save-excursion
+                                        (goto-char ghostel--cursor-char-pos)
+                                        (current-column))
+                                      (line-number-at-pos ghostel--cursor-char-pos t))))
             (ecol  (current-column))
             (eline (line-number-at-pos (point) t))
-            (dy    (if tline (- eline tline) 0))
-            (dx    (- ecol (or tcol 0))))
+            (dy    (- eline tline))
+            (dx    (- ecol tcol)))
       (cond ((< 0 dy) (dotimes (_ dy)       (ghostel--send-encoded "down" "")))
             ((< dy 0) (dotimes (_ (abs dy)) (ghostel--send-encoded "up" ""))))
       (cond ((< 0 dx) (dotimes (_ dx)       (ghostel--send-encoded "right" "")))
@@ -187,22 +186,24 @@ In alt-screen mode, defer to the terminal's cursor style."
 
 (defvar-local hel-ghostel--sync-inhibit nil
   "When non-nil, skip arrow-key sync in the insert-state-entry hook.
-Set by the \"I\" / \"A\" commands which send Ctrl-a / Ctrl-e directly.")
+Set by the \"I\" / \"A\" commands (which send Ctrl-a / Ctrl-e) and
+by the \"c\" command (which positions the cursor itself).")
 
 (defun hel-ghostel--insert-state-enter-h ()
   "Sync terminal cursor with Emacs point when on switching to Hel Insert state.
-Skipped when `hel-ghostel--sync-inhibit' is set (by I/A commands
-which already sent Ctrl-a/Ctrl-e).  Also skipped outside semi-char.
+Skipped when `hel-ghostel--sync-inhibit' is set (by the I/A/c commands
+which already positioned the cursor).  Also skipped outside semi-char.
 When point is on a different row from the terminal cursor, snap back
 to the terminal cursor to avoid sending arrows the shell interprets
 as history navigation."
-  (cond (hel-ghostel--sync-inhibit
-         (setq hel-ghostel--sync-inhibit nil))
-        ((hel-ghostel--active-p)
-         (if (= (line-number-at-pos (point) t)
-                hel-ghostel--cursor-line)
-             (hel-ghostel--move-cursor-to-point)
-           (goto-char ghostel--cursor-char-pos)))))
+  (when hel-ghostel-mode
+    (cond (hel-ghostel--sync-inhibit
+           (setq hel-ghostel--sync-inhibit nil))
+          ((hel-ghostel--active-p)
+           (if (= (line-number-at-pos (point) t)
+                  hel-ghostel--cursor-line)
+               (hel-ghostel--move-cursor-to-point)
+             (goto-char ghostel--cursor-char-pos))))))
 
 ;;; Editing primitives
 
@@ -240,7 +241,7 @@ meaningful character (see `hel-ghostel--meaningful-length')."
 
 (defun hel-ghostel--clear-input-line ()
   "Clear the active input line via Ctrl-e Ctrl-u.
-Readline/zle/prompt_toolki all bind this to end-of-line then
+Readline/zle/prompt_toolkit all bind this to end-of-line then
 kill-from-start, clearing the input without needing prompt geometry.
 Sets `hel-ghostel--sync-point-on-next-redraw' so the redraw triggered
 by the shell's echo lands point at the new cursor position."
@@ -437,9 +438,10 @@ Valid values: `auto', `terminal', `hel'.")
 
 (defun hel-ghostel-escape ()
   "Dispatch insert-state ESC based on `hel-ghostel--escape-mode'.
-In `auto' mode, sends ESC to the terminal when an alternate screen buffer
-is active (DECSET 1049 — used by vim, less, htop, etc.), otherwise switch
-to Hel Normal state."
+In `auto' mode, sends ESC to the terminal when an alternate screen
+buffer is active (DECSET 1049 — vim, less, htop, etc.), otherwise
+switches to Hel Normal state.  In `terminal' mode always sends ESC.
+In `hel' mode always switches to Normal state."
   (interactive nil ghostel-mode)
   (if (pcase hel-ghostel--escape-mode
         ('auto (-some-> ghostel--term (ghostel--mode-enabled 1049)))
@@ -453,8 +455,8 @@ to Hel Normal state."
 (defun hel-ghostel-toggle-send-escape (&optional arg)
   "Cycle or set the ESC routing mode for the current buffer.
 Without ARG, cycle through `auto' → `terminal' → `hel' → `auto'.
-With numeric prefix 1, set to `auto'; 2 to `terminal'; 3 to `hel'.
-Other numeric prefixes signal a `user-error'.
+With a numeric prefix, select by position modulo 3: 1 → `auto',
+2 → `terminal', 3 (or 0) → `hel', then wraps.
 
 The mode is buffer-local; see `hel-ghostel-send-escape' for the default."
   (interactive "P")
@@ -462,7 +464,7 @@ The mode is buffer-local; see `hel-ghostel-send-escape' for the default."
     (setq hel-ghostel--escape-mode
           (or (if arg (nth (-> (prefix-numeric-value arg)
                                (1-)
-                               (% (length modes)))
+                               (mod (length modes)))
                            modes))
               (cadr (memq hel-ghostel--escape-mode
                           modes))
