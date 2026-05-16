@@ -78,7 +78,7 @@ Hel's default buffer-editing operators work correctly there."
 
 ;;; Cursor synchronization
 
-(defvar-local hel-ghostel--last-cursor-line nil
+(defvar-local hel-ghostel--cursor-line nil
   "Buffer line where the previous redraw placed the terminal cursor.
 Used by `hel-ghostel--redraw-a' to detect prompt-line scrolling.")
 
@@ -153,21 +153,21 @@ own the screen and drive their own redraw cycle."
                                       hel-insert-state)
                             (point)))
              (pre-point-line (-some-> saved-point (line-number-at-pos t)))
-             (was-on-prompt-line (and pre-point-line
-                                      hel-ghostel--last-cursor-line
-                                      (= pre-point-line
-                                         hel-ghostel--last-cursor-line))))
+             (point-on-cursor-line? (and pre-point-line
+                                         hel-ghostel--cursor-line
+                                         (= pre-point-line
+                                            hel-ghostel--cursor-line))))
         (funcall orig-fun term full)
         (setq hel-ghostel--sync-point-on-next-redraw nil)
         (let* ((post-cursor-line (-some-> ghostel--cursor-char-pos
                                    (line-number-at-pos t)))
-               (prompt-moved (and was-on-prompt-line
+               (prompt-moved (and point-on-cursor-line?
                                   post-cursor-line
                                   (/= post-cursor-line
                                       pre-point-line))))
           (when (and saved-point (not prompt-moved))
             (goto-char (min saved-point (point-max))))
-          (setq hel-ghostel--last-cursor-line post-cursor-line))
+          (setq hel-ghostel--cursor-line post-cursor-line))
         (setq hel-ghostel--cursor-predicted-pos nil))
     ;; else
     (funcall orig-fun term full)))
@@ -200,7 +200,7 @@ as history navigation."
          (setq hel-ghostel--sync-inhibit nil))
         ((hel-ghostel--active-p)
          (if (= (line-number-at-pos (point) t)
-                (line-number-at-pos ghostel--cursor-char-pos t))
+                hel-ghostel--cursor-line)
              (hel-ghostel--move-cursor-to-point)
            (goto-char ghostel--cursor-char-pos)))))
 
@@ -234,9 +234,9 @@ meaningful character (see `hel-ghostel--meaningful-length')."
 
 (defun hel-ghostel--point-on-cursor-row-p ()
   "Non-nil when point is on the same buffer line as the terminal cursor."
-  (and ghostel--cursor-char-pos
+  (and hel-ghostel--cursor-line
        (= (line-number-at-pos (point) t)
-          (line-number-at-pos ghostel--cursor-char-pos t))))
+          hel-ghostel--cursor-line)))
 
 (defun hel-ghostel--clear-input-line ()
   "Clear the active input line via Ctrl-e Ctrl-u.
