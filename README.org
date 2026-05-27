@@ -1,10 +1,7 @@
 * hel-ghostel
 
-Integration between [[https://github.com/anuvyklack/hel][Hel]] (Helix Emulation Layer) and [[https://github.com/dakra/ghostel][Ghostel]] (libghostty-powered
-terminal emulator).
-
-Hel provides a Helix / Kakoune editing model inside Emacs. Ghostel runs a real
-terminal inside an Emacs buffer. This package wires the two together.
+[[https://github.com/anuvyklack/hel][Hel]] (Helix Emulation Layer) extension for [[https://github.com/dakra/ghostel][Ghostel]] (libghostty-powered terminal
+emulator).
 
 ** Install
 
@@ -16,39 +13,39 @@ terminal inside an Emacs buffer. This package wires the two together.
 ** Workflow
 
 ~Ghostel~ terminal emulator always starts in ~semi-char~ mode (it is hard-coded), in
-which most keys are sent to the terminal (except to ~ghostel-keymap-exceptions~).
-From here:
+which most keys are sent to the terminal (except for ~ghostel-keymap-exceptions~).
+In this mode, press:
 
 - =C-c Esc= ::
   - Switch to read-only mode with the terminal still running (~ghostel-emacs-mode~).
-    Keys are not sent to the terminal, you can move around the buffer, select
+    Keys are not sent to the terminal; you can move around the buffer, select
     and copy any text.
-  - With =M-u= — freezes the terminal (live output is paused) and switch to
+  - With =M-u= — freezes the terminal (live output is paused) and switches to
     read-only mode (~ghostel-copy-mode~).
 
-In read-only mode:
+Then in read-only mode press:
 - =i= or =a= — switch to ~semi-char~ mode
 - =I= or =A= — switch to ~line~ mode
 
-In ~semi-char~ and ~line~ modes:
-- =C-c i=   — switch to ~semi-char~ mode.
-- =C-c I=   — switch to ~line~ mode.
-- =C-c p=   — paste to terminal.
-- =C-c C-p= — cycle through the ~kill-ring~ and paste
-- =C-c C-w= — hel window keymap — the same an on =C-w= in normal state.
+Press =C-c Esc= to switch back to read-only mode.
+
+To switch from ~semi-char~ to ~line~ and vice versa without going through an
+intermediate read-only mode:
+- =C-c i= in ~line~ mode switches to the ~semi-char~ mode.
+- =C-c I= in ~semi-char~ mode switches to the ~line~ mode.
 
 ** Keybindings
 *** Semi-char mode
 
-| Key     | Command / note                              |
-|---------+---------------------------------------------|
-| =C-c Esc= | switch to read-only mode                    |
-| =C-S-v=   | paste                                       |
-| =C-c p=   | paste                                       |
-| =C-c C-p= | cycle through the ~kill-ring~                 |
-| =C-c I=   | switch to ~line~ mode                         |
-| =C-c w=   | switch to another window in cyclic ordering |
-| =C-c C-w= | hel window keymap (=C-w= in normal state)     |
+| Key     | Command / note                          |
+|---------+-----------------------------------------|
+| =C-c Esc= | switch to read-only mode                |
+| =C-S-v=   | paste                                   |
+| =C-c p=   | paste                                   |
+| =C-c C-p= | cycle pasted text with the ~kill-ring~    |
+| =C-c I=   | switch to ~line~ mode                     |
+| =C-c w=   | hel window keymap (=C-w= in normal state) |
+| =C-c C-w= | hel window keymap (=C-w= in normal state) |
 
 *** Line mode
 
@@ -67,12 +64,27 @@ In ~semi-char~ and ~line~ modes:
 | =]]= / =[[= | *next* / *previous* prompt    |
 | =]l= / =[l= | *next* / *previous* hyperlink |
 
-** zsh-helix-mode integration
+** Helix mode in shell
 
-On each new shell spawn (~ghostel-pre-spawn-hook~), the following
-environment variables are exported from the current Emacs theme so
-that [[https://github.com/Multirious/zsh-helix-mode][zsh-helix-mode]] matches Emacs colors:
+Initially, I wrote this extension as an analogue of [[https://melpa.org/#/evil-ghostel][evil-ghostel]], the
+implementation is still available on the [[https://github.com/anuvyklack/hel-ghostel/tree/v1][v1 branch]] (open an issue if you want
+it as a separate package). However, I found this approach unreliable and error-prone, and
+implementing multiple-cursor support proved tedious.
 
-- =ZHM_STYLE_SELECTION= — foreground / background from ~region~ face
-- =ZHM_STYLE_CURSOR_NORMAL= — foreground / background from ~cursor~ face
-- =ZHM_CURSOR_NORMAL= — raw escape sequence for the block cursor
+It appears there are already Helix-mode plugins for both zsh and fish, so
+there is no need to reimplement functionality that already exists on a more
+reliable foundation.
+
+- [[https://github.com/Multirious/zsh-helix-mode][zsh-helix-mode]]
+- [[https://github.com/sshilovsky/fish-helix][fish-helix]]
+
+I recommend the zsh plugin, as it supports nearly the full feature set,
+including multiple cursors, whereas the fish plugin does not.
+
+*** [[https://github.com/Multirious/zsh-helix-mode][zsh-helix-mode]] integration
+
+- =hel-ghostel= auto-synchronizes =zsh-helix-mode= colors with the active Emacs
+  theme. (You don't have to do anything)
+
+- [[https://github.com/anuvyklack/hel/wiki#zsh-helix-mode][Hel wiki]] provides snippets you can put to your =zshrc= to extend =zsh-helix-mode=
+  to mimic Hel keys that extends the default Helix keys.
