@@ -23,7 +23,9 @@
 (defun hel-ghostel-h ()
   (setopt ghostel-readonly-fast-exit nil)
   (when (memq ghostel--input-mode '(semi-char char))
-    (hel-local-mode -1)))
+    (hel-local-mode -1))
+  (setq-local truncate-lines nil
+              word-wrap t))
 
 (hel-advice-add 'ghostel-semi-char-mode :after 'hel-ghostel--disable-hel-h)
 (hel-advice-add 'ghostel-char-mode      :after 'hel-ghostel--disable-hel-h)
