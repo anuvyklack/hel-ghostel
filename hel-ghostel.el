@@ -16,7 +16,7 @@
 
 (declare-function ghostel--mode-enabled "ghostel-module")
 
-;;; Config
+;;; Hooks and advices
 
 (add-hook 'ghostel-mode-hook 'hel-ghostel-h)
 
@@ -27,18 +27,44 @@
   (setq-local truncate-lines nil
               word-wrap t))
 
-(hel-advice-add 'ghostel-semi-char-mode :after 'hel-ghostel--disable-hel-h)
-(hel-advice-add 'ghostel-char-mode      :after 'hel-ghostel--disable-hel-h)
-(hel-advice-add 'ghostel-line-mode      :after 'hel-ghostel--enable-hel-h)
-(hel-advice-add 'ghostel-emacs-mode     :after 'hel-ghostel--enable-hel-h)
-(hel-advice-add 'ghostel-copy-mode      :after 'hel-ghostel--enable-hel-h)
+(hel-advice-add 'ghostel-semi-char-mode :after 'hel-ghostel--disable-hel)
+(hel-advice-add 'ghostel-char-mode      :after 'hel-ghostel--disable-hel)
+(hel-advice-add 'ghostel-line-mode      :after 'hel-ghostel--enable-hel)
 
-(defun hel-ghostel--disable-hel-h ()
+(defun hel-ghostel--disable-hel ()
   (when hel-local-mode
     (hel-local-mode -1)))
 
-(defun hel-ghostel--enable-hel-h ()
+(defun hel-ghostel--enable-hel ()
   (unless hel-local-mode
+    (hel-local-mode 1)))
+
+(hel-define-advice ghostel-emacs-mode (:override ())
+  "Switch to Ghostel Emacs mode. Terminal keep running and scrollback growing.
+To return to terminal use:
+- i, a    switch to `ghostel-semi-char-mode'
+- I, A    switch to `ghostel-line-mode'"
+  (interactive)
+  (unless (eq ghostel--input-mode 'emacs)
+    (ghostel--enter-readonly
+     'emacs nil ":Emacs"
+     (format "Terminal live, %s to return to terminal"
+             (propertize "i" 'face 'help-key-binding)))
+    (hel-local-mode 1)))
+
+(hel-define-advice ghostel-copy-mode (:override ())
+  "Switch to Ghostel Copy mode. Terminal is frozen — live output is paused.
+To return to terminal use:
+- i, a    switch to `ghostel-semi-char-mode'
+- I, A    switch to `ghostel-line-mode'"
+  (interactive)
+  (if (eq ghostel--input-mode 'copy)
+      (ghostel-readonly-exit)
+    ;; else
+    (ghostel--enter-readonly
+     'copy t ":Copy"
+     (format "Terminal frozen, %s to return to terminal"
+             (propertize "i" 'face 'help-key-binding)))
     (hel-local-mode 1)))
 
 (hel-define-advice ghostel--set-cursor-style (:around (orig-fun style visible))
@@ -47,29 +73,13 @@
       (hel-update-cursor)
     (funcall orig-fun style visible)))
 
-;;;; zsh-helix-mode integration
-
-(add-hook 'ghostel-pre-spawn-hook 'hel-ghostel--zsh-helix-mode-colors)
-
-(defun hel-ghostel--zsh-helix-mode-colors ()
-  "Setup `Multirious/zsh-helix-mode' styling environment variables according to
-the current Emacs theme."
-  (let* ((region-bg  (ghostel--face-hex-color 'region  :background))
-         (region-fg  (ghostel--face-hex-color 'region  :foreground))
-         (cursor-bg  (ghostel--face-hex-color 'cursor  :background))
-         (default-fg (ghostel--face-hex-color 'default :foreground)))
-    (setenv "ZHM_STYLE_SELECTION"     (format "fg=%s,bg=%s" region-fg region-bg))
-    (setenv "ZHM_STYLE_CURSOR_NORMAL" (format "fg=%s,bg=%s" default-fg cursor-bg))
-    (setenv "ZHM_CURSOR_NORMAL"       (format "\e[0m\e[2 q\e]12;%s\a" cursor-bg))))
-
 ;;; Keybindings
 
-(setq ghostel-keymap-exceptions
-      (->> ghostel-keymap-exceptions
-           (delete "C-u")
-           (delete "C-h")
-           (-cons* "<f1>" "M-u")
-           (delete-dups)))
+(setq ghostel-keymap-exceptions (->> ghostel-keymap-exceptions
+                                     (delete "C-u")
+                                     (delete "C-h")
+                                     (-cons* "<f1>" "M-u")
+                                     (delete-dups)))
 
 (hel-keymap-set ghostel-semi-char-mode-map
   ;; Hel rebinds `universal-argument' to "M-u"
@@ -135,15 +145,9 @@ the current Emacs theme."
 With \\[universal-argument] switch to `ghostel-copy-mode' instead."
   :multiple-cursors nil
   (interactive "P")
-  (cond ((memq ghostel--input-mode '(emacs copy))
-         (ghostel-readonly-exit)
-         (when (and hel-local-mode
-                    (not (memq ghostel--input-mode '(emacs copy))))
-           (hel-switch-state 'insert)))
-        (arg
-         (ghostel-copy-mode))
-        (t
-         (ghostel-emacs-mode))))
+  (if arg
+      (ghostel-copy-mode)
+    (ghostel-emacs-mode)))
 
 (defun hel-ghostel-beginning-of-line ()
   "Move point to prompt start or beginning of current line."
@@ -204,6 +208,22 @@ Use visual line when `visual-line-mode' is active."
   (interactive)
   (ghostel--snap-to-input)
   (ghostel--send-string "\e[59;5u"))
+
+;;; zsh-helix-mode integration
+;; https://github.com/Multirious/zsh-helix-mode
+
+(add-hook 'ghostel-pre-spawn-hook 'hel-ghostel--zsh-helix-mode)
+
+(defun hel-ghostel--zsh-helix-mode ()
+  "Setup `zsh-helix-mode' styling environment variables according to the
+current Emacs theme."
+  (let* ((region-bg  (ghostel--face-hex-color 'region  :background))
+         (region-fg  (ghostel--face-hex-color 'region  :foreground))
+         (cursor-bg  (ghostel--face-hex-color 'cursor  :background))
+         (default-fg (ghostel--face-hex-color 'default :foreground)))
+    (setenv "ZHM_STYLE_SELECTION"     (format "fg=%s,bg=%s" region-fg region-bg))
+    (setenv "ZHM_STYLE_CURSOR_NORMAL" (format "fg=%s,bg=%s" default-fg cursor-bg))
+    (setenv "ZHM_CURSOR_NORMAL"       (format "\e[0m\e[2 q\e]12;%s\a" cursor-bg))))
 
 ;;; .
 (provide 'hel-ghostel)
