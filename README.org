@@ -29,9 +29,9 @@ Then in read-only mode press:
 
 Press =C-c Esc= to switch back to read-only mode.
 
-To switch from ~semi-char~ to ~line~ and vice versa without going through an
+To switch from ~semi-char~ to ~line~ mode and vice versa without going through an
 intermediate read-only mode:
-- =C-c i= in ~line~ mode switches to the ~semi-char~ mode.
+- =C-c i= in ~line~ mode switches to the ~semi-char~ mode;
 - =C-c I= in ~semi-char~ mode switches to the ~line~ mode.
 
 ** Keybindings
