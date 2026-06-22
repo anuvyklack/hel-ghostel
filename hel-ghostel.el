@@ -206,7 +206,7 @@ Use visual line when `visual-line-mode' is active."
 (defun hel-ghostel--send-C-semicolon ()
   "Forward \"C-;\" to the terminal using the Kitty keyboard protocol."
   (interactive)
-  (ghostel--snap-to-input)
+  (ghostel--on-user-input)
   (ghostel--send-string "\e[59;5u"))
 
 ;;; zsh-helix-mode integration
