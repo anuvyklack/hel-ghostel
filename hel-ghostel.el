@@ -4,7 +4,7 @@
 ;;
 ;; Author: Yuriy Artemyev <anuvyklack@gmail.com>
 ;; URL: https://github.com/anuvyklack/hel-ghostel
-;; Version: 0.1.0
+;; Version: 0.3.0
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;;
 ;; This file is NOT part of GNU Emacs.
@@ -15,6 +15,84 @@
 (require 'ghostel)
 
 (declare-function ghostel--mode-enabled "ghostel-module")
+
+;;; Customization
+
+(defcustom hel-ghostel-send-ESC-to-terminal nil
+  "When non-nil ESC in `ghostel-semi-char-mode' would be sent to terminal.
+See `hel-ghostel-semi-char-mode-escape'."
+  :type 'boolean
+  :group 'hel
+  :set (lambda (symbol value)
+         (set-default symbol value)
+         (keymap-set ghostel-semi-char-mode-map
+                     "C-c <escape>" (if value
+                                        'ghostel-emacs-mode
+                                      'hel-ghostel--send-escape))))
+
+;;; Keybindings
+
+(setq ghostel-keymap-exceptions (->> ghostel-keymap-exceptions
+                                     (delete "C-u")
+                                     (delete "C-h")
+                                     (-cons* "<f1>" "M-u")
+                                     (delete-dups)))
+
+(hel-keymap-set ghostel-mode-map :state 'normal
+  "] ]"  'ghostel-next-prompt
+  "[ ["  'ghostel-previous-prompt
+  "] l"  'ghostel-next-hyperlink  "[ l"  'ghostel-previous-hyperlink)
+
+(setq ghostel-hyperlink-repeat-map
+      (define-keymap
+        "]" 'ghostel-next-hyperlink
+        "[" 'ghostel-previous-hyperlink))
+
+(setq ghostel-prompt-repeat-map
+      (define-keymap
+        "]" 'ghostel-next-prompt
+        "[" 'ghostel-previous-prompt))
+
+;;;; semi-char mode
+
+(hel-keymap-set ghostel-semi-char-mode-map
+  "<escape>" 'hel-ghostel-semi-char-mode-escape
+  "C-S-v"    '("paste" . ghostel-yank)
+  "C-c I"    '("line-mode" . ghostel-line-mode)
+  "C-c w"    '("window-map" . hel-window-map)
+  ;; Hel rebinds `universal-argument' to "M-u"
+  "C-u"  'ghostel--self-insert
+  "M-u"   nil
+  ;; Hel encourages using "F1" instead of "C-h" as the help prefix.
+  "C-h"  'ghostel--self-insert
+  "<f1>"  nil
+  ;; Missing keybindings
+  "C-;"  'hel-ghostel--send-C-semicolon)
+
+;;;; line mode
+
+(hel-keymap-set ghostel-line-mode-map
+  "C-c <escape>" '("semi-char mode" . ghostel-semi-char-mode)
+  "C-c i"        '("semi-char mode" . ghostel-semi-char-mode))
+
+(hel-keymap-set ghostel-line-mode-map :state 'normal
+  "<escape>" 'hel-ghostel-line-mode-escape
+  "C-j"      'ghostel-line-mode-history-next
+  "C-k"      'ghostel-line-mode-history-previous
+  "<remap> <hel-beginning-of-line-command>" 'hel-ghostel-beginning-of-line-command ; gh
+  "<remap> <hel-first-non-blank>"           'hel-ghostel-first-non-blank)          ; gs
+
+;;;; read-only mode
+
+(hel-keymap-set ghostel-readonly-mode-map :state 'normal
+  "y"   'hel-ghostel-copy
+  "p"   '("paste" . ghostel-yank)
+  "C-p" '("paste pop" . ghostel-yank-pop)
+  ;;
+  "<remap> <hel-insert>"      'ghostel-semi-char-mode ; "i"
+  "<remap> <hel-append>"      'ghostel-semi-char-mode ; "a"
+  "<remap> <hel-insert-line>" 'ghostel-line-mode      ; "I"
+  "<remap> <hel-append-line>" 'ghostel-line-mode)     ; "A"
 
 ;;; Hooks and advices
 
@@ -46,10 +124,9 @@ To return to terminal use:
 - I, A    switch to `ghostel-line-mode'"
   (interactive)
   (unless (eq ghostel--input-mode 'emacs)
-    (ghostel--enter-readonly
-     'emacs nil ":Emacs"
-     (format "Terminal live, %s to return to terminal"
-             (propertize "i" 'face 'help-key-binding)))
+    (ghostel--enter-readonly 'emacs nil ":Emacs"
+                             (format "Terminal live, %s to return to terminal"
+                                     (-> "i" (propertize 'face 'help-key-binding))))
     (hel-local-mode 1)))
 
 (hel-define-advice ghostel-copy-mode (:override ())
@@ -61,10 +138,9 @@ To return to terminal use:
   (if (eq ghostel--input-mode 'copy)
       (ghostel-readonly-exit)
     ;; else
-    (ghostel--enter-readonly
-     'copy t ":Copy"
-     (format "Terminal frozen, %s to return to terminal"
-             (propertize "i" 'face 'help-key-binding)))
+    (ghostel--enter-readonly 'copy t ":Copy"
+                             (format "Terminal frozen, %s to return to terminal"
+                                     (-> "i" (propertize 'face 'help-key-binding))))
     (hel-local-mode 1)))
 
 (hel-define-advice ghostel--set-cursor-style (:around (orig-fun style visible))
@@ -73,81 +149,38 @@ To return to terminal use:
       (hel-update-cursor)
     (funcall orig-fun style visible)))
 
-;;; Keybindings
-
-(setq ghostel-keymap-exceptions (->> ghostel-keymap-exceptions
-                                     (delete "C-u")
-                                     (delete "C-h")
-                                     (-cons* "<f1>" "M-u")
-                                     (delete-dups)))
-
-(hel-keymap-set ghostel-semi-char-mode-map
-  ;; Hel rebinds `universal-argument' to "M-u"
-  "C-u"     'ghostel--self-insert
-  "M-u"      nil
-  ;; Hel encourages using "F1" instead of "C-h" as the help prefix.
-  "C-h"     'ghostel--self-insert
-  "<f1>"     nil
-  ;;
-  "<escape>" 'ghostel--send-event
-  "C-c I"   '("line-mode" . ghostel-line-mode)
-  ;; paste
-  "C-S-v"   'ghostel-yank
-  "C-c p"   '("paste" . ghostel-yank)
-  "C-c C-p" '("paste pop" . ghostel-yank-pop)
-  ;; Fix missing keybindigs
-  "C-;"     'hel-ghostel--send-C-semicolon)
-
-(hel-keymap-set ghostel-semi-char-mode-map
-  "C-c <escape>" 'hel-ghostel-escape
-  "C-c w"        '("window-map" . hel-window-map)
-  "C-c C-w"      '("window-map" . hel-window-map))
-
-(hel-keymap-set ghostel-line-mode-map
-  "C-c <escape>" 'hel-ghostel-escape
-  "C-c i"        '("semi-char mode" . ghostel-semi-char-mode))
-
-(hel-keymap-set ghostel-line-mode-map :state 'normal
-  "<remap> <hel-beginning-of-line-command>" 'hel-ghostel-beginning-of-line-command ; gh
-  "<remap> <hel-first-non-blank>"           'hel-ghostel-first-non-blank           ; gs
-  "C-j" 'ghostel-line-mode-history-next
-  "C-k" 'ghostel-line-mode-history-previous)
-
-(hel-keymap-set ghostel-readonly-mode-map :state 'normal
-  "y" 'hel-ghostel-copy
-  ;;
-  "<remap> <hel-insert>"      'ghostel-semi-char-mode ; "i"
-  "<remap> <hel-append>"      'ghostel-semi-char-mode ; "a"
-  "<remap> <hel-insert-line>" 'ghostel-line-mode      ; "I"
-  "<remap> <hel-append-line>" 'ghostel-line-mode)     ; "A"
-
-(hel-keymap-set ghostel-mode-map :state 'normal
-  "] ]"  'ghostel-next-prompt
-  "[ ["  'ghostel-previous-prompt
-  "] l"  'ghostel-next-hyperlink
-  "[ l"  'ghostel-previous-hyperlink)
-
-(setq ghostel-hyperlink-repeat-map
-      (define-keymap
-        "]" 'ghostel-next-hyperlink
-        "[" 'ghostel-previous-hyperlink))
-
-(setq ghostel-prompt-repeat-map
-      (define-keymap
-        "]" 'ghostel-next-prompt
-        "[" 'ghostel-previous-prompt))
-
 ;;; Commands
 
 ;; Esc
-(hel-define-command hel-ghostel-escape (arg)
-  "Switch to `ghostel-emacs-mode'.
-With \\[universal-argument] switch to `ghostel-copy-mode' instead."
-  :multiple-cursors nil
-  (interactive "P")
-  (if arg
-      (ghostel-copy-mode)
-    (ghostel-emacs-mode)))
+(defun hel-ghostel-semi-char-mode-escape ()
+  "
+When `hel-ghostel-send-ESC-to-terminal' is set:
+- Send `ESC' event to terminal;
+- With \\[universal-argument] switch to `ghostel-emacs-mode';
+- With \\[universal-argument] \\[universal-argument] switch to `ghostel-copy-mode'.
+
+Else:
+- Switch to `ghostel-emacs-mode';
+- With \\[universal-argument] send `ESC' event to terminal;
+- With \\[universal-argument] \\[universal-argument] switch to `ghostel-copy-mode'."
+  (interactive)
+  (pcase current-prefix-arg
+    ('nil  (if hel-ghostel-send-ESC-to-terminal
+               (ghostel--send-event)
+             (ghostel-emacs-mode)))
+    ('(4)  (if hel-ghostel-send-ESC-to-terminal
+               (ghostel-emacs-mode)
+             (ghostel--send-event)))
+    ('(16) (ghostel-copy-mode))))
+
+(defun hel-ghostel-line-mode-escape ()
+  "
+- `hel-normal-state-escape'
+- With \\[universal-argument] switch to `ghostel-semi-char-mode'"
+  (interactive)
+  (pcase current-prefix-arg
+    ('nil (hel-normal-state-escape))
+    ('(4) (ghostel-semi-char-mode))))
 
 (defun hel-ghostel-beginning-of-line ()
   "Move point to prompt start or beginning of current line."
@@ -198,8 +231,8 @@ Use visual line when `visual-line-mode' is active."
   (interactive)
   (let ((filter-buffer-substring-function
          (lambda (beg end _delete)
-           (->> (buffer-substring beg end)
-                (ghostel--clean-copy-text)))))
+           (-> (buffer-substring beg end)
+               (ghostel--clean-copy-text)))))
     (hel-copy)))
 
 ;; C-;
@@ -209,14 +242,22 @@ Use visual line when `visual-line-mode' is active."
   (ghostel--on-user-input)
   (ghostel--send-string "\e[59;5u"))
 
+(defun hel-ghostel--send-escape ()
+  "Send ESC (\\x1b) to the terminal."
+  (interactive)
+  (ghostel--on-user-input)
+  (ghostel--send-string "\e"))
+
 ;;; zsh-helix-mode integration
 ;; https://github.com/Multirious/zsh-helix-mode
 
 (add-hook 'ghostel-pre-spawn-hook 'hel-ghostel--zsh-helix-mode)
 
 (defun hel-ghostel--zsh-helix-mode ()
-  "Setup `zsh-helix-mode' styling environment variables according to the
-current Emacs theme."
+  "Setup zsh-helix-mode¹ styling environment variables according to the
+current Emacs theme.
+
+[1]: https://github.com/Multirious/zsh-helix-mode"
   (let* ((region-bg  (ghostel--face-hex-color 'region  :background))
          (region-fg  (ghostel--face-hex-color 'region  :foreground))
          (cursor-bg  (ghostel--face-hex-color 'cursor  :background))

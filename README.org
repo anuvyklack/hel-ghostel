@@ -16,64 +16,72 @@ emulator).
 which most keys are sent to the terminal (except for ~ghostel-keymap-exceptions~).
 In this mode, press:
 
-- =C-c Esc= ::
-  - Switch to read-only mode with the terminal still running (~ghostel-emacs-mode~).
-    Keys are not sent to the terminal; you can move around the buffer, select
-    and copy any text.
-  - With =M-u= — freezes the terminal (live output is paused) and switches to
-    read-only mode (~ghostel-copy-mode~).
+- =Esc= ::
+  Detach from the terminal and switch to read-only mode. (~ghostel-emacs-mode~)
+  Keys are no longer sent to the terminal, allow you to move freely around
+  the buffer, select and copy any text.
 
-Then in read-only mode press:
+- =M-u Esc= or =C-c Esc= ::
+  Send =ESC= (ASCII 27) event to the terminal.
+
+- =M-u M-u Esc= ::
+  Freezes the terminal (live output is paused) and switch to read-only mode.
+  (~ghostel-copy-mode~)
+
+#+begin_quote
+[!IMPORTANT]
+Set ~hel-ghostel-send-ESC-to-terminal~ variable to swap =Esc= and =M-u Esc=.
+#+end_quote
+
+In read-only mode press:
 - =i= or =a= — switch to ~semi-char~ mode
 - =I= or =A= — switch to ~line~ mode
 
-Press =C-c Esc= to switch back to read-only mode.
-
-To switch from ~semi-char~ to ~line~ mode and vice versa without going through an
-intermediate read-only mode:
+To switch from ~semi-char~ to ~line~ mode and vice versa directly without going
+through the read-only mode:
 - =C-c i= in ~line~ mode switches to the ~semi-char~ mode;
 - =C-c I= in ~semi-char~ mode switches to the ~line~ mode.
 
 ** Keybindings
 *** Semi-char mode
 
-| Key     | Command / note                          |
-|---------+-----------------------------------------|
-| =C-c Esc= | switch to read-only mode                |
-| =C-S-v=   | paste                                   |
-| =C-c p=   | paste                                   |
-| =C-c C-p= | cycle pasted text with the ~kill-ring~    |
-| =C-c I=   | switch to ~line~ mode                     |
-| =C-c w=   | hel window keymap (=C-w= in normal state) |
-| =C-c C-w= | hel window keymap (=C-w= in normal state) |
+| Key            | Command / note                                    |
+|----------------+---------------------------------------------------|
+| =Esc= or =C-c Esc= | detach from terminal and switch to read-only mode |
+| =C-S-v=          | paste into terminal                               |
+| =C-c I=          | switch to ~line~ mode                               |
+| =C-c w=          | hel window keymap (=C-w= in normal state)           |
+| =C-c C-w=        | hel window keymap (=C-w= in normal state)           |
 
 *** Line mode
 
-| Key       | Command                  |
-|-----------+--------------------------|
-| =C-c Esc=   | switch to read-only mode |
-| =C-c i=     | switch to ~semi-char~ mode |
-| =C-j= / =C-k= | history                  |
+| Key                | Command                  |
+|--------------------+--------------------------|
+| =M-u Esc= or =C-c Esc= | switch to read-only mode |
+| =C-c i=              | switch to ~semi-char~ mode |
+| =C-j= / =C-k=          | history                  |
 
-*** Read-only modes
+*** Read-only mode
 
-| Key     | Command                   |
-|---------+---------------------------|
-| =i=, =a=    | switch to ~semi-char~ mode  |
-| =I=, =A=    | switch to ~line~ mode       |
-| =]]= / =[[= | *next* / *previous* prompt    |
-| =]l= / =[l= | *next* / *previous* hyperlink |
+| Key     | Command                                               |
+|---------+-------------------------------------------------------|
+| =i=, =a=    | switch to ~semi-char~ mode                              |
+| =I=, =A=    | switch to ~line~ mode                                   |
+| =p=       | paste into terminal                                   |
+| =C-p=     | replace just-pasted text with next one from ~kill-ring~ |
+| ~[[~ / ~]]~ | previous / next prompt                                |
+| =[l= / =]l= | previous / next hyperlink                             |
 
-** Helix mode in shell
+** Helix mode in the shell
 
 Initially, I wrote this extension as an analogue of [[https://melpa.org/#/evil-ghostel][evil-ghostel]], the
-implementation is still available on the [[https://github.com/anuvyklack/hel-ghostel/tree/v1][v1 branch]] (open an issue if you want
-it as a separate package). However, I found this approach unreliable and error-prone, and
-implementing multiple-cursor support proved tedious.
+implementation is still available on the [[https://github.com/anuvyklack/hel-ghostel/tree/v1][v1 branch]] (open an issue if you
+want it as a separate package). However, I found this approach unreliable
+and error-prone, and implementing multiple-cursor support proved tedious.
 
-It appears there are already Helix-mode plugins for both zsh and fish, so
-there is no need to reimplement functionality that already exists on a more
-reliable foundation.
+It appears there are already Helix-mode plugins for both zsh and fish
+shells, so there is no need to reimplement functionality that already
+exists on a more reliable foundation.
 
 - [[https://github.com/Multirious/zsh-helix-mode][zsh-helix-mode]]
 - [[https://github.com/sshilovsky/fish-helix][fish-helix]]
@@ -86,5 +94,5 @@ including multiple cursors, whereas the fish plugin does not.
 - =hel-ghostel= auto-synchronizes =zsh-helix-mode= colors with the active Emacs
   theme. (You don't have to do anything)
 
-- [[https://github.com/anuvyklack/hel/wiki#zsh-helix-mode][Hel wiki]] provides snippets you can put to your =zshrc= to extend =zsh-helix-mode=
+- [[https://github.com/anuvyklack/hel/wiki#zsh-helix-mode][Hel wiki]] provides snippets you can put in your =zshrc= to extend =zsh-helix-mode=
   to mimic Hel keys that extends the default Helix keys.
